@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sequenciador de Composições</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
+    <style>
+        body {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 0;
+            font-size: 16px;
+        }
+        input, button {
+            background-color: #252526;
+            color: #ccc;
+            border: 1px solid #3c3c3c;
+            padding: 5px 10px;
+            margin: 2px;
+        }
+        #results, #fileInputContainer {
+            padding: 10px;
+            margin-top: 5px;
+            border: 1px dashed #3c3c3c;
+            background-color: #2d2d2d;
+        }
+        .header {
+            color: #FFFFFF;
+            font-weight: bold;
+        }
+        ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        li {
+            padding: 5px;
+            margin-bottom: 3px;
+            border: 1px solid #3c3c3c;
+            background-color: #252526;
+            cursor: move; /* allows moving */
+        }
+        .fixed {
+            background-color: #1e1e1e;
+            color: #dcdcaa; /* fixed color for numbers */
+            cursor: default;
+            display: inline-block;
+            width: 25px; /* fixed width for alignment */
+        }
+        .movable {
+            display: inline-block;
+            width: calc(100% - 30px); /* adjustable width */
+        }
+        .tick-badge {
+            display: block;
+            width: 32px;
+            height: 32px;
+            background: url('https://upload.wikimedia.org/wikipedia/commons/a/ac/Green_tick.svg') no-repeat center center;
+            background-size: contain;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.14.0/Sortable.min.js"></script>
+</head>
+<body>
+    <h1 class="header">Sequenciador de Composições</h1>
+    <div id="fileInputContainer">
+        <input type="file" id="fileInput" onchange="handleFileUpload(event)">
+    </div>
+    <br><br>
+    Number of compositions: <input type="number" id="numCompositions" min="1" max="10" value="2" onchange="addCompositionInputs()">
+    <br>
+    <div id="compositionInputs"></div>
+    <button onclick="addCompositionInputs()">Generate Composition Inputs</button>
+    <button onclick="performAnalysis()">Analyze</button>
+    <div id="results"></div>
+
+    <script>
+const whiteComponents = ["504037/1", "500043/1", "503807/1", "514921/1"]; // Define white components
+const matteComponent = "511402/1"; // Define matte component
+
+function handleFileUpload(event) {
+    var fileInput = document.getElementById('fileInput');
+    fileInput.style.display = 'none'; // Hide the file input
+    var tick = document.createElement('div');
+    tick.className = 'tick-badge';
+    document.getElementById('fileInputContainer').appendChild(tick);
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const data = e.target.result;
+        const workbook = XLSX.read(data, {type: 'binary'});
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const json = XLSX.utils.sheet_to_json(sheet);
+        window.compositionDict = loadAndPrepareData(json);
+    };
+    reader.readAsBinaryString(event.target.files[0]);
+}
+
+function loadAndPrepareData(data) {
+    let dict = {};
+    data.forEach((row) => {
+        let comp = row['COMPOSICAO'];
+        if (!dict[comp]) {
+            dict[comp] = {components: [], description: row['DESCRICAO_COMPOSICAO'], hasWhite: false, hasMatte: false};
+        }
+        dict[comp].components.push([row['COMPONENTE'], row['% APLICADO DE MATERIAL']]);
+        if (whiteComponents.includes(row['COMPONENTE'])) {
+            dict[comp].hasWhite = true; // Mark if white component is present
+        }
+        if (row['COMPONENTE'] === matteComponent) {
+            dict[comp].hasMatte = true; // Mark if matte component is present
+        }
+    });
+    return dict;
+}
+
+function calculateSimilarity(compA, compB) {
+    let setA = new Set(compA.components.map(JSON.stringify));
+    let setB = new Set(compB.components.map(JSON.stringify));
+    let intersection = new Set([...setA].filter(x => setB.has(x)));
+    return intersection.size / Math.max(setA.size, setB.size);
+}
+
+function performAnalysis() {
+    const numCompositions = parseInt(document.getElementById('numCompositions').value);
+    const compositions = [];
+    for (let i = 0; i < numCompositions; i++) {
+        compositions.push(document.getElementById(`composition${i}`).value);
+    }
+    const firstComposition = compositions.shift();
+    let found = true;
+    compositions.forEach(comp => {
+        if (!compositionDict[comp]) {
+            alert("Composition code " + comp + " not found.");
+            found = false;
+        }
+    });
+
+    if (found) {
+        let similarityScores = {[firstComposition]: 1.0};
+        compositions.forEach(comp => {
+            if (comp !== firstComposition) {
+                similarityScores[comp] = calculateSimilarity(compositionDict[firstComposition], compositionDict[comp]);
+            }
+        });
+        let ordered = Object.keys(similarityScores).sort((a, b) => {
+            // Sort by matte component presence first, then white, then by similarity score
+            if (compositionDict[a].hasMatte === compositionDict[b].hasMatte) {
+                if (compositionDict[a].hasWhite === compositionDict[b].hasWhite) {
+                    return similarityScores[b] - similarityScores[a]; // Sort by similarity
+                }
+                return compositionDict[b].hasWhite ? 1 : -1; // Prioritize white components
+            }
+            return compositionDict[b].hasMatte ? 1 : -1; // Prioritize matte components
+        });
+        let resultText = "<ul id='sortableList'>";
+        ordered.forEach((comp, index) => {
+            resultText += `<li><span class='fixed'>${index + 1}.</span> <span class='movable'>Composição ${comp} (${compositionDict[comp].description})</span></li>`;
+        });
+        resultText += "</ul>";
+        document.getElementById('results').innerHTML = resultText;
+        new Sortable(document.getElementById('sortableList'), { animation: 150 });
+    }
+}
+
+function addCompositionInputs() {
+    const numCompositions = parseInt(document.getElementById('numCompositions').value);
+    let container = document.getElementById('compositionInputs');
+    container.innerHTML = "";
+    for (let i = 0; i < numCompositions; i++) {
+        container.innerHTML += `Composition code ${i + 1}: <input type='text' id='composition${i}'><br>`;
+    }
+}
+document.addEventListener('DOMContentLoaded', addCompositionInputs);
+</script>
+
+</body>
+</html>
